@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BlackChat</title>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', sans-serif; background: #36393f; color: #dcddde; height: 100vh; }
+        .container { height: 100vh; display: flex; }
+        .sidebar { width: 240px; background: #2f3136; }
+        .server-name { padding: 20px; background: #202225; text-align: center; font-weight: bold; }
+        .channels { padding: 10px; }
+        .channel { padding: 10px 15px; cursor: pointer; border-radius: 5px; margin: 2px 0; }
+        .channel:hover, .channel.active { background: #5865f2; }
+        .main { flex: 1; display: flex; flex-direction: column; }
+        .top-bar { height: 50px; background: #36393f; padding: 0 20px; display: flex; align-items: center; gap: 15px; border-bottom: 1px solid #202225; }
+        .messages { flex: 1; padding: 20px; overflow-y: auto; }
+        .message { display: flex; gap: 15px; margin-bottom: 20px; }
+        .avatar { width: 40px; height: 40px; border-radius: 50%; }
+        .message-content { flex: 1; }
+        .username { font-weight: 600; color: #fff; }
+        .timestamp { color: #72767d; font-size: 12px; margin-left: 10px; }
+        .input-area { padding: 20px; background: #40444b; }
+        .input-container { display: flex; gap: 15px; }
+        .message-input { flex: 1; padding: 15px; border-radius: 8px; border: 1px solid #40444b; background: #484c52; color: #dcddde; }
+        .send-btn { padding: 15px 25px; background: #5865f2; border: none; border-radius: 8px; color: white; cursor: pointer; }
+        .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; }
+        .modal-content { background: #36393f; padding: 30px; border-radius: 8px; max-width: 400px; width: 90%; }
+        .form-group { margin-bottom: 20px; }
+        .form-group input { width: 100%; padding: 12px; border: 1px solid #40444b; border-radius: 5px; background: #2f3136; color: #dcddde; }
+        .btn { width: 100%; padding: 12px; background: #5865f2; border: none; border-radius: 5px; color: white; cursor: pointer; font-size: 16px; }
+        .hidden { display: none !important; }
+        #userProfile { cursor: pointer; display: flex; align-items: center; gap: 10px; }
+        #currentChannel { font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div id="authModal" class="modal">
+            <div class="modal-content">
+                <h2 id="modalTitle">Login to BlackChat</h2>
+                <form id="authForm">
+                    <div class="form-group">
+                        <input type="text" id="username" placeholder="Username" required>
+                    </div>
+                    <div class="form-group">
+                        <input type="password" id="password" placeholder="Password" required>
+                    </div>
+                    <button type="submit" class="btn">Login</button>
+                    <button type="button" id="toggleAuth" class="btn" style="background: #4f545c; margin-top: 10px;">Register</button>
+                </form>
+            </div>
+        </div>
+
+        <div id="mainApp" class="container hidden">
+            <div class="sidebar">
+                <div class="server-name">🖤 BlackChat</div>
+                <div class="channels">
+                    <div class="channel active" data-room="general"># general</div>
+                    <div class="channel" data-room="random"># random</div>
+                    <div class="channel" data-room="coding"># coding</div>
+                </div>
+            </div>
+            <div class="main">
+                <div class="top-bar">
+                    <div id="currentChannel"># general</div>
+                    <div id="userProfile">
+                        <img id="userAvatar" class="avatar" src="https://via.placeholder.com/40/5865f2/ffffff?text=👤">
+                        <span id="currentUsername">Loading...</span>
+                    </div>
+                </div>
+                <div class="messages" id="messages"></div>
+                <div class="input-area">
+                    <div class="input-container">
+                        <input type="text" id="messageInput" class="message-input" placeholder="Send a message...">
+                        <button id="sendBtn" class="send-btn">Send</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const API_BASE = '/';
+        let currentUser = null;
+        let currentToken = null;
+        let currentRoom = 'general';
+
+        // Elements
+        const authModal = document.getElementById('authModal');
+        const mainApp = document.getElementById('mainApp');
+        const authForm = document.getElementById('authForm');
+        const toggleAuth = document.getElementById('toggleAuth');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const messages = document.getElementById('messages');
+        const channels = document.querySelectorAll('.channel');
+
+        // Check for existing session
+        const savedToken = localStorage.getItem('token');
+        const savedUser = localStorage.getItem('user');
+        if (savedToken && savedUser) {
+            currentToken = savedToken;
+            currentUser = JSON.parse(savedUser);
+            showMainApp();
+        }
+
+        toggleAuth.onclick = () => {
+            const title = document.getElementById('modalTitle');
+            const isLogin = title.textContent.includes('Login');
+            title.textContent = isLogin ? 'Register for BlackChat' : 'Login to BlackChat';
+            toggleAuth.textContent = isLogin ? 'Have account? Login' : 'Register';
+        };
+
+        authForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const isRegister = document.getElementById('modalTitle').textContent.includes('Register');
+
+            try {
+                const endpoint = isRegister ? 'register' : 'login';
+                const res = await axios.post(`${API_BASE}${endpoint}`, { username, password });
+                
+                if (!isRegister) {
+                    currentToken = res.data.token;
+                    currentUser = res.data.user;
+                } else {
+                    // Login after register
+                    const loginRes = await axios.post(`${API_BASE}login`, { username, password });
+                    currentToken = loginRes.data.token;
+                    currentUser = loginRes.data.user;
+                }
+                
+                localStorage.setItem('token', currentToken);
+                localStorage.setItem('user', JSON.stringify(currentUser));
+                showMainApp();
+            } catch (err) {
+                alert(err.response?.data?.error || 'Error!');
+            }
+        };
+
+        function showMainApp() {
+            authModal.classList.add('hidden');
+            mainApp.classList.remove('hidden');
+            updateUserDisplay();
+            socket.emit('joinRoom', currentRoom);
+        }
+
+        function updateUserDisplay() {
+            document.getElementById('userAvatar').src = currentUser.profilePic;
+            document.getElementById('currentUsername').textContent = currentUser.username;
+        }
+
+        channels.forEach(channel => {
+            channel.onclick = () => {
+                channels.forEach(c => c.classList.remove('active'));
+                channel.classList.add('active');
+                currentRoom = channel.dataset.room;
+                document.getElementById('currentChannel').textContent = `# ${currentRoom}`;
+                socket.emit('joinRoom', currentRoom);
+                messages.innerHTML = '';
+            };
+        });
+
+        async function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message || !currentUser) return;
+            socket.emit('chatMessage', { room: currentRoom, message, username: currentUser.username });
+            messageInput.value = '';
+        }
+
+        sendBtn.onclick = sendMessage;
+        messageInput.onkeypress = (e) => e.key === 'Enter' && sendMessage();
+
+        socket.on('message', (data) => {
+            const div = document.createElement('div');
+            div.className = 'message';
+            div.innerHTML = `
+                <img class="avatar" src="https://via.placeholder.com/40/5865f2/ffffff?text=👤">
+                <div>
+                    <div style="display:flex;align-items:baseline;gap:8px;">
+                        <span class="username">${data.username}</span>
+                        <span style="color:#72767d;font-size:12px;">${new Date(data.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                    <div>${data.message.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+                </div>
+            `;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        });
+
+        document.getElementById('userProfile').onclick = async () => {
+            try {
+                const res = await axios.get(`${API_BASE}profile/${currentUser.username}`, {
+                    headers: { Authorization: `Bearer ${currentToken}` }
+                });
+                alert(`👤 ${res.data.username}\n\n${res.data.bio || 'No bio'}`);
+            } catch (e) {
+                console.error(e);
+            }
+        };
+    </script>
+</body>
+</html>
